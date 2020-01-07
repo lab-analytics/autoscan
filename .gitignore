@@ -2,6 +2,9 @@
 __pycache__/
 *.py[cod]
 *$py.class
+_tmp
+_tmp/
+*_tmp
 
 # C extensions
 *.so
@@ -117,3 +120,13 @@ dmypy.json
 #output
 _out
 *.csv
+
+# Untitled
+Untitled.*
+untitled.*
+
+#notebooks
+.ipynb_checkpoints/
+
+#tmp
+_tmp/
