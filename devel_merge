@@ -1,0 +1,215 @@
+{
+ "nbformat": 4,
+ "nbformat_minor": 2,
+ "metadata": {
+  "language_info": {
+   "name": "python",
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "version": "3.7.4-final"
+  },
+  "orig_nbformat": 2,
+  "file_extension": ".py",
+  "mimetype": "text/x-python",
+  "name": "python",
+  "npconvert_exporter": "python",
+  "pygments_lexer": "ipython3",
+  "version": 3,
+  "kernelspec": {
+   "name": "python3",
+   "display_name": "Python 3"
+  }
+ },
+ "cells": [
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import os, sys, re\n",
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "from pathlib import Path\n",
+    "from functools import reduce\n",
+    "import time\n",
+    "\n",
+    "# define the current path (notebooks in lab_utils)\n",
+    "currpath = os.getcwd()\n",
+    "labutilspath = str(Path(currpath).parents[1])\n",
+    "sys.path.append(labutilspath)\n",
+    "\n",
+    "# import the autoscan routines\n",
+    "from autoscan import autoscan\n",
+    "\n",
+    "# define paths\n",
+    "basepath = '/media/damiansa/data/lab/data/characterization/'\n",
+    "\n",
+    "# set the asdatapath accordingly (where is the atuoscan data inside basedatapath?)\n",
+    "asdatapath   = 'autoscan'\n",
+    "\n",
+    "#sample selection and instance\n",
+    "tag = 'sh_001'\n",
+    "instance = 'before'\n",
+    "\n",
+    "# set datapath\n",
+    "datapath = os.path.join(basepath, asdatapath)\n",
+    "\n",
+    "pp = autoscan.postprocess(labutilspath=labutilspath)\n",
+    "pp.debug = False"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# load the summary dataframe with all measurement\n",
+    "summary = pd.read_csv(os.path.join(datapath,'summary.csv'))\n",
+    "# remove ztop and zbottom\n",
+    "t = summary['relroot'].apply(lambda x: len(re.findall(r'ztop|zbottom', x))==0)\n",
+    "summary = summary.loc[t,:].copy()\n",
+    "\n",
+    "sample_info = pp._subset_info(summary, instance = instance, sample_tag = tag)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "\n",
+    "dfs = []\n",
+    "for s in sample_info.itertuples(index=False):\n",
+    "    relpath = getattr(s, 'relroot')\n",
+    "    probe   = getattr(s, 'probe')\n",
+    "    data = pp.read_data(os.path.join(datapath, relpath), probe = probe)\n",
+    "    h = pp.probe_settings[probe]['h']\n",
+    "    data = data.iloc[:,:h]\n",
+    "    if probe == 'vel':\n",
+    "        for x in data.angle.unique():\n",
+    "            dfs.append(data.loc[data['angle'] == x,:].copy().drop(columns = 'angle'))\n",
+    "    else:\n",
+    "        dfs.append(data)\n",
+    "\n",
+    "df_merged = reduce(lambda left,right: pd.merge(left,right,on=['x','y'], how ='inner'), dfs)\n",
+    "df_merged = pp._enforce_float(df_merged)\n",
+    "df_merged['tag'] = tag\n",
+    "df_merged['instance'] = instance\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "#s1 = pd.merge(data['perm'].iloc[:,:3], data['impulse'].iloc[:,:3], how='inner', on=['x', 'y'])\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "df_merged"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "sample_info"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "summary"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "save = False\n",
+    "fullset = []\n",
+    "for instace in ['before', 'after']:\n",
+    "    for tag in summary['sample_tag'].unique():\n",
+    "        s = pp._subset_info(summary, instance = instance, sample_tag = tag)\n",
+    "        if len(s)>0:\n",
+    "            family = s['sample_family'].unique()[0]\n",
+    "            code   = s['sample_code'].unique()[0]\n",
+    "            for subtag in s['subsample_tag'].unique():\n",
+    "                ss = pp._subset_info(s, subsample_tag = subtag, sample_code = code, sample_family = family)\n",
+    "                for side in ss['side'].unique():\n",
+    "                    sss = pp._subset_info(ss, side = side)\n",
+    "                    aprobes = sss['probe'].unique()\n",
+    "                    nprobes = len(aprobes)\n",
+    "                    if nprobes>1 and ('ftir' in aprobes):\n",
+    "                        dfs = []\n",
+    "                        for m in sss.itertuples(index=False):\n",
+    "                            relpath  = getattr(m, 'relroot')\n",
+    "                            filepath = os.path.join(datapath, relpath)\n",
+    "                            probe    = getattr(m, 'probe')\n",
+    "                            \n",
+    "                            data     = pp.read_data(filepath, probe = probe)\n",
+    "                            \n",
+    "                            h    = pp.probe_settings[probe]['h']\n",
+    "                            data = data.iloc[:,:h]\n",
+    "\n",
+    "                            if probe == 'vel':\n",
+    "                                for k,x in enumerate(data.angle.unique()):\n",
+    "                                    colnames = ['vp_'+str(k), 'vs_'+str(k)]\n",
+    "                                    data_temp = data.loc[data['angle'] == x,:].copy().drop(columns = 'angle')\n",
+    "                                    data_temp.columns = ['x','y'] + colnames\n",
+    "                                    dfs.append(data_temp)\n",
+    "                                    del data_temp\n",
+    "                            else:\n",
+    "                                dfs.append(data)\n",
+    "\n",
+    "                        df_merged = reduce(lambda left,right: pd.merge(left,right,on=['x','y'], how ='inner'), dfs)\n",
+    "                        df_merged = pp._enforce_float(df_merged)\n",
+    "\n",
+    "                        if df_merged.shape[0]>0 and len(df_merged.iloc[:,1754:].columns.values)>1:\n",
+    "                            print(tag, subtag, nprobes, sss['probe'].unique(), sep = '\\t')\n",
+    "                            print(df_merged.iloc[:,1754:].columns.values, '\\t', df_merged.shape, '\\n')\n",
+    "                            \n",
+    "                            df_merged['family']   = family\n",
+    "                            df_merged['code']     = code\n",
+    "                            df_merged['tag']      = tag\n",
+    "                            df_merged['subtag']   = subtag\n",
+    "                            df_merged['instance'] = instance\n",
+    "                            \n",
+    "                            if save:\n",
+    "                                outpath = pp._set_outpath(datapath,tag)\n",
+    "                                outname = pp._set_outfilename(tag, subtag, side, instance, 'fullset')\n",
+    "                                pp.save_data(df_merged, savepath = outpath,  savename = outname)\n",
+    "                        \n",
+    "                            fullset.append(df_merged.iloc[:,2:])\n",
+    "\n"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "df_full = pd.concat(fullset, sort = False, axis = 0, ignore_index=True, join = 'outer').iloc[:,:1763]"
+   ]
+  }
+ ]
+}
