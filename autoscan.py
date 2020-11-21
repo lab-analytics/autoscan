@@ -1,5 +1,6 @@
 
-import os, sys, re, shutil, warnings, string, fnmatch
+from functools import reduce
+import os, sys, re, shutil, warnings, fnmatch
 import numpy as np
 import pandas as pd
 import deepdish as dp
@@ -9,39 +10,121 @@ class basics(object):
     _labutilspath = None
     _rock_basics_flag = True
     debug  = True
-    
+
     probe_settings = {
         'perm':{
             'usecols':[0,1,2,6,12],
             'skiprows':7,
             'names':['x','y','perm','meas_code','tile'],
             'tip':['perm'],
-            'h':3
+            'h':3,
+            'hi':2
         },
+        
         'impulse':{
             'usecols':[0,1,2,3],
             'skiprows':7,
             'names':['x','y','e_star','tile'],
             'tip':['e_star'],
-            'h':3
+            'h':3,
+            'hi':2
         },
+        
         'vel':{
             'usecols':[0,1,2,3,6,9],
             'skiprows':7,
             'names':['x','y','angle','vp','vs','tile'],
             'tip':['vp','vs'],
-            'h':5
+            'h':5,
+            'hi':3
         },
+        
         'ftir':{
             'usecols':None,
             'skiprows':2,
             'names':['x','y']+['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
             'tip':['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
-            'h':None
+            'h':None,
+            'hi':2
         }
         
     }
+    
+    _alphabet = {chr(x) : k + 4 for k, x in enumerate(range(97,123))}
+    _alphabet[0] = 0
+    _alphabet['line'] = 1
+    _alphabet['zbottom'] = _alphabet['bottom'] = 2
+    _alphabet['ztop'] = _alphabet['top'] = 3
+    _alphabet['points'] = 30
+    _alphabet_max = 30
 
+    def _val_replace(self, v):
+        try:
+            val = self._alphabet[v]
+        except KeyError:
+            self._alphabet_max += 1
+            self._alphabet[v] = self._alphabet_max
+            val = self._alphabet_max
+        return val
+    
+    def duplicated_varnames(self, df):
+        """[summary]
+        Return a dict of all variable names that are duplicated in the dataframe.
+        source: https://stackoverflow.com/questions/26226343/pandas-concat-yields-valueerror-plan-shapes-are-not-aligned
+        Args:
+            df (dataframe): dataframe
+        Returns:
+            dict: dictionary with repeated values
+        """
+    
+        repeat_dict = {}
+        var_list = list(df) # list of varnames as strings
+        for varname in var_list:
+            # make a list of all instances of that varname
+            test_list = [v for v in var_list if v == varname] 
+            # if more than one instance, report duplications in repeat_dict
+            if len(test_list) > 1: 
+                repeat_dict[varname] = len(test_list)
+        return repeat_dict
+    
+    def _find_repeated_index_values(self, fdesc, debug = False, key = 'probe'):
+        potential_problem = []
+        for r in fdesc.index.unique():
+            test_out = reduce(lambda x, y: x == y, 
+                            (np.sum(fdesc.loc[[r], key].values == v) for v in fdesc.loc[[r], key].unique()))
+            if not test_out:
+                potential_problem.append(r)
+        if debug: print(potential_problem, sep = '\n')
+        return potential_problem
+
+    def _fix_repeated_probes(self, fdesc, fix = True, debug = False, key = 'probe', redundacy = True, apply_func = lambda s: s.split('/')[-2]):
+        
+        potential_problem = self._find_repeated_index_values(fdesc, debug = debug, key = key)
+
+        if np.logical_and(fix, len(potential_problem)>0):
+            index_cols = fdesc.index.names
+            summary = fdesc.reset_index(drop = False).copy()
+            for nproblem in potential_problem:
+                pb = summary.query("tag == '%s' & subtag == '%s' & instance == '%s'" % (nproblem[2:5])).loc[:, [key]]
+                summary.loc[pb.index, 'instance'] = summary.loc[pb.index, 'instance'] + '-' + summary.loc[pb.index, 'relroot'].apply(apply_func)
+            
+            fdesc = summary.set_index(index_cols).copy()
+        
+            if np.logical_and(redundacy, len(self._find_repeated_index_values(fdesc, debug = True)) == 0): print('all good')
+        
+        return fdesc
+
+    def _list_concat(self, list_of_lists):
+        """[summary]
+        concatenate a list of lists, and flatten the output.
+        Args:
+            list_of_lists (list): list of lists
+
+        Returns:
+            list: flatten list with all elements in list of lists concatenated.
+        """
+        return [item for sublist in list_of_lists for item in sublist]
+    
     def _get_rock_basics(self):
         from _helpers.basics import rock_info
         self.rock_info = rock_info()
@@ -90,7 +173,7 @@ class basics(object):
         return xy
     
     def _enforce_float(self, df):
-        df = df.apply(pd.to_numeric,errors='coerce').dropna()
+        df = df.apply(pd.to_numeric,errors = 'coerce').dropna()
         df.replace(np.inf, np.nan, inplace = True)
         df.dropna(inplace = True)
         # reset index 
@@ -98,34 +181,40 @@ class basics(object):
 
         return df
 
-    def read_data(self, fpath, probe, zero_offset = True, fix_xy = True):
+    def read_data(self, fpath, probe, zero_offset = True, fix_xy = True, only_data_cols = False, **kwargs):
         df = pd.read_csv(fpath, 
                         usecols = self.probe_settings[probe]['usecols'],
                         skiprows = self.probe_settings[probe]['skiprows'],
-                        names = self.probe_settings[probe]['names'])
+                        names = self.probe_settings[probe]['names'], **kwargs)
 
         df = self._enforce_float(df)
 
         if fix_xy:
-            df.loc[:,['x','y']] = df.loc[:,['x','y']].apply(self._fix_xy)
+            df.loc[:,['x', 'y']] = df.loc[:,['x', 'y']].apply(self._fix_xy)
+        
         # reset x,y offset to zero
         if zero_offset:
-            df.iloc[:,:2] = df.iloc[:,:2] - df.iloc[:,:2].min()
+            df.iloc[:, :2] = df.iloc[:, :2] - df.iloc[:, :2].min()
+        
+        if only_data_cols:
+            h = self.probe_settings[probe]['h']
+            df = df.iloc[:, :h].copy()
+        
         return df
     
-    def _save(self, data, method= 'pandas', savefile = 'data'):
+    def _save(self, data, method= 'pandas', savefile = 'data', **kwargs):
         if method =='pandas':
-            data.to_csv(savefile + '.csv', index = False)
+            data.to_csv(savefile + '.csv', index = False, **kwargs)
         if method=='h5' or method=='deepdish':
             dp.io.save(savefile + '.h5', data)
         return
     
-    def save_data(self, df, method = 'pandas', savepath = './', savename = 'data', save_xyp = False, probe = None):
+    def save_data(self, df, method = 'pandas', savepath = './', savename = 'data', save_xyp = False, probe = None, **kwargs):
         savefile = os.path.join(savepath, savename)
         if save_xyp and (probe is not None):
             h = self.probe_settings[probe]['h']
-            df = df.iloc[:,:h].copy()
-        self._save(df, savefile = savefile, method = method)
+            df = df.iloc[:, :h].copy()
+        self._save(df, savefile = savefile, method = method, **kwargs)
         return
     
     def __init__(self, labutilspath = None):
@@ -184,7 +273,7 @@ class file_sorter(basics):
         return sub
 
     def _get_probename(self, x):
-        probe = self._get_refindall(r'(perm|vel|impulse|ftir)',x)
+        probe = self._get_refindall(r'(perm|vel|impulse|ftir)', x)
         return probe
 
     def _get_instance(self, x):
@@ -204,19 +293,19 @@ class file_sorter(basics):
                     r'\1_\5_\3.\6',
                     fname)
         if self.debug:
-            print('swaping', root.split('/')[self._datapath_length - 1], fname,name2,sep='\t')
+            print('swaping', root.split('/')[self._datapath_length - 1], fname,name2, sep='\t')
         if not self.dryrun:
             self._rename_file(root, fname, name2)
         return name2
 
     def check_autoscan_fname(self, fname, root):
-        instance = None
         if (not 'before' in fname) and (not 'after' in fname):
             warnings.warn('before or after not found in ' + 
                         root.split('/')[self._datapath_length - 1] + fname)
             fname = self.add_before_fname(fname, root)
         instance = re.findall('before|after',fname)
         if len(instance)==1:
+            
             instance = instance[0]
             if self.debug: print(root.split('/')[self._datapath_length - 1], instance, fname, sep='\t')
             if len(fname.split('_'))>2:
@@ -225,11 +314,11 @@ class file_sorter(basics):
                     fname = self.swap_instance_fname(fname, root)
         else:
             if len(instance)>1:
-                warning = fname + ' has more than one instance: ' + ', '.join(instance)
-                warning = warning + ' and cannot choose! \n check ' + os.path.join(root,fname) 
+                warnmsg = fname + ' has more than one instance: ' + ', '.join(instance)
+                warnmsg = warnmsg + ' and cannot choose! \n check ' + os.path.join(root,fname) 
             if len(instance)==0:
-                warning = fname + ' not in either category (!) \n please review!'
-            warnings.warn(warning)
+                warnmsg = fname + ' not in either category (!) \n please review!'
+            warnings.warn(warnmsg)
         return fname
     
     def wrangle(self, save = False, link = False, savepath = None):
@@ -286,16 +375,35 @@ class postprocess(basics):
     outpath = None
     outname = None
     sample_info = None
-
+    
     info_columns = ['side', 'sample_code', 'sample_family', 'sample_tag', 'subsample_tag']
     
-    shortnames_dict = {
+    info_columns_short = {
         'side':'side',
         'sample_code':'code',
         'sample_family':'family',
         'sample_tag':'tag',
         'subsample_tag':'subtag'
         }
+    
+    @property
+    def probes(self):
+        """[summary]
+        self.probes
+        Returns:
+            list: sorted probe names
+        """
+        return sorted(self.probe_settings.keys())
+    
+    def empty_dataframe(self, vel_directions = 2):
+        import copy
+        ps = copy.deepcopy(self.probe_settings)
+        ps['vel']['names'] = [s + str(k) for k in range(vel_directions) for s in ['vp_', 'vs_']]
+        ps['vel']['h'] = None
+        ps['vel']['hi'] = 0
+        cols = self._list_concat((ps[key]['names'][ps[key]['hi']:ps[key]['h']] for key in self.probes))
+        df = pd.DataFrame(columns = ['x', 'y'] + cols)
+        return df
     
     def _set_outpath(self, root = './', subfolder = '', mkdir = True):
         outpath = os.path.join(root, subfolder, self.postprocessed_folder)
@@ -315,7 +423,7 @@ class postprocess(basics):
         for var in self.info_columns:
             varout = var
             if shorthand:
-                varout = self.shortnames_dict[var]
+                varout = self.info_columns_short[var]
             if self.debug: 
                 print(var, varout, sep = '\t')
             out[varout] = getattr(ds, var)
@@ -329,7 +437,7 @@ class postprocess(basics):
         data = {}
         
         for x in self.info_columns:
-            data[self.shortnames_dict[x]] = run_info[x]
+            data[self.info_columns_short[x]] = run_info[x]
 
         for col in self.probe_settings[probe]['names'][2:]:
             data[col] = df[col].values
@@ -368,7 +476,6 @@ class postprocess(basics):
 
         # get center data
         temp_list = []
-        col_names = []
 
         tip_names = [s+'_c' for s in tip]
         col_names = ['v'] + tip_names 
@@ -397,7 +504,7 @@ class postprocess(basics):
 
         # add extra information (in case needed for statistical analysis)
         for x in self.info_columns:
-            df_out[self.shortnames_dict[x]] = run_info[x]
+            df_out[self.info_columns_short[x]] = run_info[x]
 
         return df_out
     
@@ -408,11 +515,43 @@ class postprocess(basics):
             key_list.append(key)
             df_probe = df_probe.loc[(df[key]==kwargs[key])]
         df_probe = df_probe.drop(columns = key_list).copy()
-        df_probe.fillna('', inplace=True)
-        df_probe.reset_index(inplace=True, drop=True)
+        df_probe.fillna('', inplace = True)
+        df_probe.reset_index(inplace = True, drop = True)
 
         return df_probe
     
+    def read(self, datapath = './', probe = None, only_data_cols = True, **kwargs):
+        flag = False
+        try:
+            df = self.read_data(datapath, probe = probe, only_data_cols = only_data_cols, **kwargs)
+            flag = True
+        except:
+            print('could not load %s' % (datapath), sep = '\n')
+            df = self.empty_dataframe()
+        if np.logical_and(flag, probe == 'vel'):
+            dvel = []
+            for k, x in enumerate(df.angle.unique()):
+                colnames = ['vp_' + str(k), 'vs_' + str(k)]
+                df_temp = df.loc[df['angle'] == x, :].copy().drop(columns = 'angle')
+                df_temp.columns = ['x', 'y'] + colnames
+                dvel.append(df_temp)
+            if len(dvel) >0:
+                df = reduce(lambda left,right: pd.merge(left, right, on = ['x', 'y'], how = 'outer'), dvel)
+        return df
+    
+    def read_sample_data(self, fdesc, datapath = './', **kwargs):
+        r  = fdesc.index.unique().values[0]
+        df_gen = (self.read(datapath = os.path.join(datapath, v.relroot), probe = v.probe, **kwargs) 
+                  for _,v in fdesc.iterrows() if fdesc.shape[0] > 0)
+        df = reduce(lambda left,right: pd.merge(left, right, on = ['x', 'y'], how ='outer'), df_gen)
+        df = pd.merge(left = self._empty_frame, right = df, how = 'outer').loc[:, self._empty_frame.columns]
+        df = pd.concat([df], keys = [r], names = self.sample_data_index_names)
+        
+        return df
+    
     def __init__(self, labutilspath=None):
         super().__init__(labutilspath=labutilspath)
+        self._reduce = reduce
+        self.sample_data_index_names = ['family', 'code', 'tag', 'subtag', 'instance', 'side', 'm']
+        self._empty_frame = self.empty_dataframe()
         return
