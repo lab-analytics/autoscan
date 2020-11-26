@@ -45,7 +45,8 @@ class basics(object):
             'names':['x','y']+['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
             'tip':['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
             'h':None,
-            'hi':2
+            'hi':2,
+            'lambdas': np.load(os.path.join(os.path.dirname(__file__), 'ftir-lambdas.npy'))
         }
         
     }
