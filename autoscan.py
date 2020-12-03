@@ -15,38 +15,46 @@ class basics(object):
         'perm':{
             'usecols':[0,1,2,6,12],
             'skiprows':7,
+            'col':['x','y'] + ['perm'],
             'names':['x','y','perm','meas_code','tile'],
             'tip':['perm'],
             'h':3,
-            'hi':2
+            'hi':2,
+            'limits':[0., 1.0e4]
         },
         
         'impulse':{
             'usecols':[0,1,2,3],
             'skiprows':7,
+            'col':['x','y'] + ['e_star'],
             'names':['x','y','e_star','tile'],
             'tip':['e_star'],
             'h':3,
-            'hi':2
+            'hi':2,
+            'limits':[0., 1.0e3]
         },
         
         'vel':{
             'usecols':[0,1,2,3,6,9],
             'skiprows':7,
+            'col':['x','y'] + ['vp_0', 'vs_0', 'vp_1', 'vs_1'],
             'names':['x','y','angle','vp','vs','tile'],
             'tip':['vp','vs'],
             'h':5,
-            'hi':3
+            'hi':3,
+            'limits':[0.5e3, 8.0e3]
         },
         
         'ftir':{
             'usecols':None,
             'skiprows':2,
-            'names':['x','y']+['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
+            'col': ['x','y'] + ['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
+            'names':['x','y'] + ['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
             'tip':['l_'+str(int(x)) for x in np.linspace(1,1752,1752)],
             'h':None,
             'hi':2,
-            'lambdas': np.load(os.path.join(os.path.dirname(__file__), 'ftir-lambdas.npy'))
+            'lambdas': np.load(os.path.join(os.path.dirname(__file__), 'ftir-lambdas.npy')),
+            'limits':[0.0, 6.0]
         }
         
     }
