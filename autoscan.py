@@ -23,7 +23,7 @@ class basics(object):
             'limits':[0., 1.0e4]
         },
         
-        'impulse':{
+        'impl':{
             'usecols':[0,1,2,3],
             'skiprows':7,
             'col':['x','y'] + ['e_star'],
@@ -34,10 +34,10 @@ class basics(object):
             'limits':[0., 1.0e3]
         },
         
-        'vel':{
+        'vels':{
             'usecols':[0,1,2,3,6,9],
             'skiprows':7,
-            'col':['x','y'] + ['vp_0', 'vs_0', 'vp_1', 'vs_1'],
+            'col':['x','y'] + ['vp0', 'vs0', 'vp90', 'vs90'],
             'names':['x','y','angle','vp','vs','tile'],
             'tip':['vp','vs'],
             'h':5,
@@ -66,6 +66,10 @@ class basics(object):
     _alphabet['ztop'] = _alphabet['top'] = 3
     _alphabet['points'] = 30
     _alphabet_max = 30
+
+    def vel_agg(self, x):
+        x = np.mean(x)
+        return x
 
     def _val_replace(self, v):
         try:
@@ -182,21 +186,69 @@ class basics(object):
         return xy
     
     def _enforce_float(self, df):
-        df = df.apply(pd.to_numeric,errors = 'coerce').dropna()
+        df = df.apply(pd.to_numeric,errors = 'coerce')#.dropna(thresh = 'all')
         df.replace(np.inf, np.nan, inplace = True)
-        df.dropna(inplace = True)
+        df.dropna(inplace = True, how = 'all')
         # reset index 
         df.reset_index(inplace = True, drop = True)
 
         return df
 
-    def read_data(self, fpath, probe, zero_offset = True, fix_xy = True, only_data_cols = False, **kwargs):
-        df = pd.read_csv(fpath, 
-                        usecols = self.probe_settings[probe]['usecols'],
-                        skiprows = self.probe_settings[probe]['skiprows'],
-                        names = self.probe_settings[probe]['names'], **kwargs)
+    def get_info_and_data_rows(self, file, n_max_info = 2, info_rows = False):
+        with open(file, 'r') as temp_f:
+            col_count = 0
+            n = 0
+            t = str
+            d = []
+            while t != float :
+                l = temp_f.readline()
+                c = l.split(",")
+                try:
+                    t = type(float(c[0]))
+                except:
+                    t = str
+                col_count = len(c)
+                n += 1
+                if n == 20:
+                    t = float
+                d.append([col_count, n])
+            if n < 20:
+                n_rows_skip = n - 1
+                d = np.array(d)
+                n_info_rows = sum(d.T[0, :] <= n_max_info)
+            else:
+                n_rows_skip = -1
+                n_info_rows = -1
+            # if info_rows:
+            #     d = np.array(d)
+            #     n_info_rows = sum(d.T[0, :] <= n_max_info)
+            #     return n_rows_skip, n_info_rows
+            # else:
+            #     return n_rows_skip
+        return int(n_rows_skip), int(n_info_rows)
 
-        df = self._enforce_float(df)
+    def read_data(self, fpath, probe, zero_offset = True, fix_xy = True, only_data_cols = False, enforce_float = True, infer_row_settings = False, file_info = False, **kwargs):
+        
+        opts = {
+                'usecols' : self.probe_settings[probe]['usecols'],
+                'skiprows' : self.probe_settings[probe]['skiprows'],
+                'names' : self.probe_settings[probe]['names']
+            }
+        
+        if np.logical_or(infer_row_settings, file_info):
+            n_rows_skip, n_info_rows = self.get_info_and_data_rows(fpath)
+            if n_rows_skip == -1:
+                file_info = False
+                infer_row_settings = False
+        
+        if infer_row_settings:
+            # print('inferring row settings')
+            opts['skiprows'] = n_rows_skip
+            
+        df = pd.read_csv(fpath, **opts, **kwargs)
+
+        if enforce_float:
+            df = self._enforce_float(df)
 
         if fix_xy:
             df.loc[:,['x', 'y']] = df.loc[:,['x', 'y']].apply(self._fix_xy)
@@ -209,7 +261,12 @@ class basics(object):
             h = self.probe_settings[probe]['h']
             df = df.iloc[:, :h].copy()
         
-        return df
+        if file_info:
+            df_info = pd.read_csv(fpath, nrows = n_info_rows, names = ['info', 'val'], header = None)
+            df_info = df_info.pivot_table(columns = 'info', aggfunc = lambda x: x).reset_index(drop = True).drop(columns = 'File')
+            return df, df_info
+        else:
+            return df
     
     def _save(self, data, method= 'pandas', savefile = 'data', **kwargs):
         if method =='pandas':
@@ -248,20 +305,24 @@ class file_sorter(basics):
         }
     }
 
-    _df_colnames_ordered = ['sample_tag', 'subsample_tag', 'sample_code', 'sample_family', 'probe', 'side', 'instance', 'fname', 'relroot']
+    _df_colnames_ordered = ['sample_tag', 'subsample_tag', 'sample_code', 'sample_family', 
+                            'probe', 'side', 'instance', 'experiment',
+                            'fname', 'relroot']
 
     def _get_exclude_list(self):
         self.datapath['exclude'] = ['_special-studies', 'special_studies', '_special_studies', '_unsorted', 
-        self.datapath['raw'], self.datapath['generic'], self.datapath['analysis'], '*layout*', '_postprocessed']
+                                    self.datapath['raw'], self.datapath['generic'], self.datapath['analysis'],
+                                    '*layout*', '_postprocessed']
         self._files_excludes = r'|'.join([fnmatch.translate(x) for x in self.datapath['files']['exclude']]) or r'$.'
         self._files_includes = r'|'.join([fnmatch.translate(x) for x in self.datapath['files']['include']]) or r'$.'
         self._datapath_length = int(len(self.datapath['path'].split('/')))
         return
     
-    def _rename_file(self, root,fname_old, fname_new):
-        oldname = os.path.join(root,fname_old)
-        newname = os.path.join(root,fname_new)
-        shutil.move(oldname,newname)
+    def _rename_file(self, root, fname_old, fname_new, debug = False):
+        oldname = os.path.join(root, fname_old)
+        newname = os.path.join(root, fname_new)
+        if debug: print("renaming:\n%s\nto\n%s" % (oldname, newname))
+        shutil.move(oldname, newname)
         return
 
     def _get_refindall(self, pattern, string):
@@ -272,7 +333,7 @@ class file_sorter(basics):
         return v
 
     def _get_sides(self, x):
-        side = self._get_refindall(r'(before|after)_([a-z]+|[0-9]+)[.]', x)
+        side = self._get_refindall(r'_([a-z0-9]+).csv$', x.lower())
         if side is not None:
             side = side[-1]
         return side
@@ -282,27 +343,27 @@ class file_sorter(basics):
         return sub
 
     def _get_probename(self, x):
-        probe = self._get_refindall(r'(perm|vel|impulse|ftir)', x)
+        probe = self._get_refindall(r'(perm|vels|impl|ftir)', x)
         return probe
 
     def _get_instance(self, x):
         instance = self._get_refindall(r'(before|after)', x)
         return instance
 
-    def add_before_fname(self, fname,root):
-        name2 = re.sub(r'(perm|vel|impulse|ftir).*([a-z]+)[.]([a-z]+)',r'\1_before_\2.\3',fname)
+    def add_before_fname(self, fname, root):
+        name2 = re.sub(r'(perm|vels|impl|ftir).*(-|_)([a-z0-9]+)[.]([a-z]+)', r'\1_before_\3.\4', fname)
         if self.debug:
-            print(root.split('/')[self._datapath_length - 1], fname, name2, sep='\t')
+            print(root, fname, name2, sep='\t')
         if not self.dryrun:
             self._rename_file(root, fname, name2)
         return name2
 
     def swap_instance_fname(self, fname,root):
-        name2 = re.sub(r'(perm|vel|impulse|ftir)(_|-)([a-z]+|[0-9]+)(_|-).*(before|after).*[.]([a-z]+)',
-                    r'\1_\5_\3.\6',
+        name2 = re.sub(r'(perm|vels|impl|ftir)(_|-)([a-z]+|[0-9]+)(_|-)(.*)(before|after)(.*)[.]([a-z]+)',
+                    r'\1_\6_\3.\8',
                     fname)
         if self.debug:
-            print('swaping', root.split('/')[self._datapath_length - 1], fname,name2, sep='\t')
+            print('swaping', root, fname, name2, sep='\t')
         if not self.dryrun:
             self._rename_file(root, fname, name2)
         return name2
@@ -312,13 +373,13 @@ class file_sorter(basics):
             warnings.warn('before or after not found in ' + 
                         root.split('/')[self._datapath_length - 1] + fname)
             fname = self.add_before_fname(fname, root)
-        instance = re.findall('before|after',fname)
+        instance = re.findall('before|after', fname)
         if len(instance)==1:
             
             instance = instance[0]
             if self.debug: print(root.split('/')[self._datapath_length - 1], instance, fname, sep='\t')
             if len(fname.split('_'))>2:
-                tst = re.match(r'(perm|vel|impulse|ftir)(-|_)(before|after).*([a-z]+)[.]([a-z]+)', fname)
+                tst = re.match(r'(perm|vels|impl|ftir)(-|_)(before|after)(-|_)([a-z0-9]+)[.]([a-z]+)', fname)
                 if tst is None:
                     fname = self.swap_instance_fname(fname, root)
         else:
@@ -330,7 +391,7 @@ class file_sorter(basics):
             warnings.warn(warnmsg)
         return fname
     
-    def wrangle(self, save = False, link = False, savepath = None):
+    def wrangle(self, save = False, link = False, savepath = None, experiment = True):
         self._get_exclude_list()
 
         fs = []
@@ -342,7 +403,7 @@ class file_sorter(basics):
             for fname in files:
                 fname = self.check_autoscan_fname(fname, root)
                 fs.append(fname)
-                rs.append(os.path.relpath(os.path.join(root,fname),start=self.datapath['path']))
+                rs.append(os.path.relpath(os.path.join(root, fname), start = self.datapath['path']))
 
         df = pd.DataFrame({'fname':fs, 'relroot':rs})
         df['sample_tag']    = df['relroot'].apply(lambda x: x.split('/')[0])
@@ -356,7 +417,14 @@ class file_sorter(basics):
                 axis = 1, sort = False)
 
         for s in ['code', 'family']:
-            df['sample_' + s] = df['sample_tag'].apply(self._get_rockinfo, key=s)
+            df['sample_' + s] = df['sample_tag'].apply(self._get_rockinfo, key = s)
+
+        # add experiment type 
+        if experiment:
+            ix = df.instance.values == 'after'
+            df.loc[ix, 'experiment'] = df.loc[ix, 'relroot'].apply(lambda x: 
+                re.findall(r'exp[a-z]+[/](\w+)[/]', x)[0]
+                )
 
         df = df.loc[:, self._df_colnames_ordered]
 
@@ -404,14 +472,15 @@ class postprocess(basics):
         """
         return sorted(self.probe_settings.keys())
     
-    def empty_dataframe(self, vel_directions = 2):
-        import copy
-        ps = copy.deepcopy(self.probe_settings)
-        ps['vel']['names'] = [s + str(k) for k in range(vel_directions) for s in ['vp_', 'vs_']]
-        ps['vel']['h'] = None
-        ps['vel']['hi'] = 0
-        cols = self._list_concat((ps[key]['names'][ps[key]['hi']:ps[key]['h']] for key in self.probes))
-        df = pd.DataFrame(columns = ['x', 'y'] + cols)
+    @property
+    def empty_dataframe(self):
+        # import copy
+        # ps = copy.deepcopy(self.probe_settings)
+        # # ps['vels']['names'] = [s + str(k) for k in [0, 90.0, 45.0] for s in ['vp', 'vs']]
+        # ps['vels']['h'] = None
+        # ps['vels']['hi'] = 0
+        # cols = self._list_concat((ps[key]['names'][ps[key]['hi']:ps[key]['h']] for key in self.probes))
+        df = pd.DataFrame(columns = ['x', 'y'])# + cols)
         return df
     
     def _set_outpath(self, root = './', subfolder = '', mkdir = True):
@@ -529,38 +598,65 @@ class postprocess(basics):
 
         return df_probe
     
+    def _angle_var_int(self, x):
+        try:
+            x = np.int(x)
+        except:
+            x = int(0)
+        
+        return x
+    
     def read(self, datapath = './', probe = None, only_data_cols = True, **kwargs):
-        flag = False
+        read_error = ''
         try:
             df = self.read_data(datapath, probe = probe, only_data_cols = only_data_cols, **kwargs)
             flag = True
-        except:
-            print('could not load %s' % (datapath), sep = '\n')
-            df = self.empty_dataframe()
-        if np.logical_and(flag, probe == 'vel'):
-            dvel = []
-            for k, x in enumerate(df.angle.unique()):
-                colnames = ['vp_' + str(k), 'vs_' + str(k)]
-                df_temp = df.loc[df['angle'] == x, :].copy().drop(columns = 'angle')
-                df_temp.columns = ['x', 'y'] + colnames
-                dvel.append(df_temp)
-            if len(dvel) >0:
-                df = reduce(lambda left,right: pd.merge(left, right, on = ['x', 'y'], how = 'outer'), dvel)
+        except Exception as e:
+            warnings.warn('\ncould not load %s. \traceback self.read_data:\n%s' % (datapath, e))
+            df = self._empty_frame
+            flag = False
+            
+        if np.logical_and(flag, probe == 'vels'):
+            # print('fixing vels')
+            df.loc[:, 'angle'] = df.loc[:, 'angle'].apply(self._angle_var_int)
+            df = df.pivot_table(index = ['x', 'y'], columns = ['angle'], values = ['vp', 'vs'], aggfunc = self.vel_agg).reset_index(drop = False)
+            mi = df.columns.to_list()
+            df.columns = pd.Index([str(e[0]) + str(e[1]) for e in mi])
         return df
     
     def read_sample_data(self, fdesc, datapath = './', **kwargs):
         r  = fdesc.index.unique().values[0]
-        df_gen = (self.read(datapath = os.path.join(datapath, v.relroot), probe = v.probe, **kwargs) 
-                  for _,v in fdesc.iterrows() if fdesc.shape[0] > 0)
-        df = reduce(lambda left,right: pd.merge(left, right, on = ['x', 'y'], how ='outer'), df_gen)
-        df = pd.merge(left = self._empty_frame, right = df, how = 'outer').loc[:, self._empty_frame.columns]
-        df = pd.concat([df], keys = [r], names = self.sample_data_index_names)
+        s = len(fdesc)
+        try:
+            df_gen = (self.read(datapath = os.path.join(datapath, v.relroot), 
+                                probe = v.probe, 
+                                **kwargs) 
+                    for _,v in fdesc.iterrows())        
+            flag = True
+        except Exception as e:
+            warnings.warn('traceback error: %s' %(e))
+            flag = False
+            df_gen = (self._empty_frame)
+            df = self._empty_frame
+            
+        
+        if flag:
+            if s > 1:
+                df = reduce(lambda left,right: pd.merge(left, right, on = ['x', 'y'], how ='outer'), df_gen)
+            elif s == 1:
+                df = [*df_gen][0]
+        
+            df = pd.merge(left = self._empty_frame, right = df, how = 'outer')#.loc[:, self._empty_frame.columns]
+            df = pd.concat([df], keys = [r], names = self.sample_data_index_names)
+        else:
+            warnings.warn('no data to loaded. %s is empty.' % (fdesc))
+            df = None
         
         return df
     
     def __init__(self, labutilspath=None):
         super().__init__(labutilspath=labutilspath)
         self._reduce = reduce
-        self.sample_data_index_names = ['family', 'code', 'tag', 'subtag', 'instance', 'side', 'm']
-        self._empty_frame = self.empty_dataframe()
+        self.sample_data_index_names = ['family', 'code', 'tag', 'subtag', 'instance', 'experiment', 'side', 'm']
+        self._empty_frame = self.empty_dataframe
         return
