@@ -6,6 +6,8 @@ import pandas as pd
 import deepdish as dp
 from pathlib import Path
 
+idx = pd.IndexSlice
+
 class basics(object):
     _labutilspath = None
     _rock_basics_flag = True
@@ -140,8 +142,9 @@ class basics(object):
     
     def _get_rock_basics(self):
         from _helpers.basics import rock_info
-        self.rock_info = rock_info()
-        self._rock_basics_flag = False
+        if self._rock_basics_flag:
+            self.rock_info = rock_info()
+            self._rock_basics_flag = False
         return
     
     def _get_rock_dict(self):
@@ -157,6 +160,48 @@ class basics(object):
         s = self.rock_info.rock_dict[x.split('_')[0]][key]
         return s
     
+    def _load_material_df(self):
+        self._get_rock_basics()
+        df_rock_info = pd.DataFrame.from_dict(self.rock_info.rock_dict, orient = 'index')
+        df_rock_info.index.name = 'tag'
+        df_rock_info.set_index(['family', 'genus', df_rock_info.index], drop = False, append = False, inplace = True)
+        ix_sorted = df_rock_info.index.sort_values()
+        df_rock_info = df_rock_info.loc[ix_sorted, :]
+        setattr(self, 'material_df', df_rock_info)
+        return
+    
+    def update_rock_dict_from_df(self, df = None):
+        if df is None:
+            df = self.material_df.copy()
+        
+        if not self._rock_basics_flag:
+            print('updating rock_info dict in _helpers module')
+            self.rock_info.rock_dict = df.set_index(df.index.get_level_values('tag')).T.to_dict()
+            self.rock_info.update_sample_file()
+        else:
+            print('you haven not started rock_info')
+        return
+    
+    def _check_loaded_material_df(self):
+        if self.material_df is None:
+            self._load_material_df()
+        return
+    
+    def get_material_density(self, base_tag):
+        self._check_loaded_material_df()
+        return self.material_df.loc[idx[:, :, base_tag], 'rho'].values[0]
+    
+    def set_material_density(self, base_tag, rho, update_database = False):
+        self._check_loaded_material_df()
+        self.material_df.loc[idx[:, :, base_tag], 'rho'] = rho
+        if update_database:
+            self.update_rock_dict_from_df()
+        return
+    
+    def load_materials_dataframe(self):
+        self._check_loaded_material_df()
+        return self.material_df
+        
     def _vel_direction(self, x):
         d = -1
         if x == 'velax':
@@ -287,6 +332,7 @@ class basics(object):
         if labutilspath is None:
             labutilspath = self._get_labutilspath()
         self._set_labutilspath(labutilspath)
+        self.material_df = None
         return
 
 class file_sorter(basics):
