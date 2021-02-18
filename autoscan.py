@@ -1,10 +1,9 @@
 
 from functools import reduce
 import os, sys, re, shutil, warnings, fnmatch
+from pathlib import Path
 import numpy as np
 import pandas as pd
-import deepdish as dp
-from pathlib import Path
 
 idx = pd.IndexSlice
 
@@ -160,7 +159,7 @@ class basics(object):
         s = self.rock_info.rock_dict[x.split('_')[0]][key]
         return s
     
-    def _load_material_df(self):
+    def load_material_df(self):
         self._get_rock_basics()
         df_rock_info = pd.DataFrame.from_dict(self.rock_info.rock_dict, orient = 'index')
         df_rock_info.index.name = 'tag'
@@ -184,7 +183,7 @@ class basics(object):
     
     def _check_loaded_material_df(self):
         if self.material_df is None:
-            self._load_material_df()
+            self.load_material_df()
         return
     
     def get_material_density(self, base_tag):
@@ -198,7 +197,7 @@ class basics(object):
             self.update_rock_dict_from_df()
         return
     
-    def load_materials_dataframe(self):
+    def read_materials_dataframe(self):
         self._check_loaded_material_df()
         return self.material_df
         
@@ -317,6 +316,7 @@ class basics(object):
         if method =='pandas':
             data.to_csv(savefile + '.csv', index = False, **kwargs)
         if method=='h5' or method=='deepdish':
+            import deepdish as dp
             dp.io.save(savefile + '.h5', data)
         return
     
@@ -328,11 +328,12 @@ class basics(object):
         self._save(df, savefile = savefile, method = method, **kwargs)
         return
     
-    def __init__(self, labutilspath = None):
+    def __init__(self, labutilspath = None, material_info = False):
         if labutilspath is None:
             labutilspath = self._get_labutilspath()
         self._set_labutilspath(labutilspath)
         self.material_df = None
+        if material_info: self.load_material_df()
         return
 
 class file_sorter(basics):
