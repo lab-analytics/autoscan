@@ -1,6 +1,6 @@
 
 from functools import reduce
-import os, sys, re, shutil, warnings, fnmatch
+import os, sys, re, shutil, warnings, fnmatch, itertools
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -24,17 +24,6 @@ class basics(object):
             'limits':[0., 1.0e4]
         },
         
-        'impl':{
-            'usecols':[0,1,2,3],
-            'skiprows':7,
-            'col':['x','y'] + ['e_star'],
-            'names':['x','y','e_star','tile'],
-            'tip':['e_star'],
-            'h':3,
-            'hi':2,
-            'limits':[0., 1.0e3]
-        },
-        
         'vels':{
             'usecols':[0,1,2,3,6,9],
             'skiprows':7,
@@ -44,6 +33,17 @@ class basics(object):
             'h':5,
             'hi':3,
             'limits':[0.5e3, 8.0e3]
+        },
+        
+        'impl':{
+            'usecols':[0,1,2,3],
+            'skiprows':7,
+            'col':['x','y'] + ['e_star'],
+            'names':['x','y','e_star','tile'],
+            'tip':['e_star'],
+            'h':3,
+            'hi':2,
+            'limits':[0., 1.0e3]
         },
         
         'ftir':{
@@ -67,7 +67,47 @@ class basics(object):
     _alphabet['ztop'] = _alphabet['top'] = 3
     _alphabet['points'] = 30
     _alphabet_max = 30
-
+    
+    @property
+    def ftir_cols(self):
+        return self.probe_settings['ftir']['col'][2:]
+    @property
+    def ftir_lambdas(self):
+        return self.probe_settings['ftir']['lambdas']
+    @property
+    def vel_cols(self):
+        return self.probe_settings['vels']['col'][2:]
+    @property
+    def probe_cols(self):
+        return list(itertools.chain(*[p['col'][2:] for _, p in self.probe_settings.items()]))
+    @property
+    def probe_contact_cols(self):
+        return self.probe_cols[:6]
+        
+    @property
+    def mech_cols(self):
+        return ['mech_' + s + str(k) for s in ['e', 'k','n'] for k in self.vel_angles]
+    
+    @property
+    def mech_cols_extra(self):
+        return ['mech_' + s + str(k) for s in ['e', 'k','n', 'l', 'm', 'g', 'i'] for k in self.vel_angles]
+    
+    @property
+    def permnmech_cols(self):
+        return self.probe_cols[:6] + self.mech_cols
+    
+    def vel_tip_update(self, angles = None, inplace = True):
+        if angles is None:
+            angles = self.vel_angles
+        
+        vcols = ['v' + s + str(k) for k in angles for s in ['p', 's']]
+        
+        if inplace:
+            setattr(self, 'vel_angles', angles)
+            self.probe_settings['vels']['col'] = ['x', 'y'] + vcols
+        else:
+            return vcols
+    
     def vel_agg(self, x):
         x = np.mean(x)
         return x
@@ -328,12 +368,17 @@ class basics(object):
         self._save(df, savefile = savefile, method = method, **kwargs)
         return
     
-    def __init__(self, labutilspath = None, material_info = False):
+    def __init__(self, labutilspath = None, material_info = False, vel_angles = [0, 90]):
         if labutilspath is None:
             labutilspath = self._get_labutilspath()
         self._set_labutilspath(labutilspath)
         self.material_df = None
         if material_info: self.load_material_df()
+        self.vel_angles = vel_angles
+        self.vel_tip_update()
+        self.meta_cols = ['family', 'code', 'tag', 'subtag', 'instance', 'experiment', 'side', 'm']
+        self.grid_cols = ['x', 'y']
+        
         return
 
 class file_sorter(basics):
