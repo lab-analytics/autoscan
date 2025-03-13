@@ -2,6 +2,7 @@ import re
 import pandas as pd
 from datetime import datetime, timezone
 import hashlib
+import numpy as np
 
 # Configuration for each tip type.
 # function for perm
@@ -44,6 +45,13 @@ def parse_perm_line(tokens):
                 result[desired_keys[token]] = None
     return result
 
+def convert_to_float(token):
+    try:
+        return float(token)
+    except ValueError:
+        return np.nan
+
+
 # For velocity tips, both 'velax' and 'velay' use the same configuration.
 TIP_CONFIG = {
     "ftir": {
@@ -75,36 +83,30 @@ TIP_CONFIG = {
     "perm": {
         "lines_per_measurement": 2,
         "fields": {
-            "tagvalrec_psimp": ("perm_values", lambda vals: parse_perm_line(vals)),
+            "tagvalrec_psimp": ("perm_values", parse_perm_line),
             "asctab_log": ("asctab_log", lambda x: None)
         }
-        # "fields": {
-        #     "tagvalrec_psimp": ("perm_values", lambda vals: dict(zip(
-        #         ['permeability', 'measurement_code', 'klinkenberg_b', 'forchheimer_factor',
-        #          'geometry_factor', 'viscosity', 'uncorrected_permeability', 'ptip'],
-        #         map(float, vals)
-        #     ))),
-        #     
-        # }
     },
     "vel": {  # used for both velax and velay
         "lines_per_measurement": 18,
+        'data_pattern': r"angle/(\d+)/(\w+)/",
+        'field_pattern': r"/(\w+)$",
         "fields": {
-            "velocity": ("velocity", float),
-            "h2h": ("h2h", float),
-            "measuredangle": ("measuredangle", float),
-            "misfit": ("misfit", float),
-            "offsetrcv": ("offsetrcv", float),
-            "offsetsrc": ("offsetsrc", float),
-            "pick": ("pick", str),
-            "rcvrgain": ("rcvrgain", float),
-            "sampleinterval": ("sampleinterval", float),
-            "scoperange": ("scoperange", float),
+            "velocity": ("velocity", convert_to_float),
+            "h2h": ("h2h", convert_to_float),
+            "measuredangle": ("measuredangle", convert_to_float),
+            "misfit": ("misfit", convert_to_float),
+            "offsetrcv": ("offsetrcv", convert_to_float),
+            "offsetsrc": ("offsetsrc", convert_to_float),
+            "pick": ("pick", convert_to_float),
+            "rcvrgain": ("rcvrgain", convert_to_float),
+            "sampleinterval": ("sampleinterval", convert_to_float),
+            "scoperange": ("scoperange", convert_to_float),
             "starttime": ("starttime", str),
-            "tipforceaux": ("tipforceaux", float),
-            "tipforcemain": ("tipforcemain", float),
-            "value": ("value", float),
-            "average": ("average", float)
+            "tipforceaux": ("tipforceaux", convert_to_float),
+            "tipforcemain": ("tipforcemain", convert_to_float),
+            "value": ("value", lambda vals: [convert_to_float(vals[i]) for i in range(len(vals))]),
+            "average": ("average", convert_to_float)
         }
     },
     "LProfile": {
@@ -136,6 +138,7 @@ BLOCK_CONFIG = {
         'fields': {
             'tile_number': ("tile_number", int),
             'tile_grid_type': ("tile_grid_type", str),
+            'info_pattern' : r"tile/(\d+)/type\s+(.+)",
             'coords_origin_pattern' : r"tile/\d+/origin/value (\d+\.\d+) (\d+\.\d+)",
             'coords_corner_pattern' : r"tile/\d+/corner/value (\d+\.\d+) (\d+\.\d+)",
             'x_origin': ("x_origin", float),
@@ -188,7 +191,7 @@ class ASDParser:
         # update tip_name and tip_config. If tip_name is None, then get "default" config from TIP_CONFIG
         # set tip_name to "default"
         self.tip_name = tip_name if tip_name not in ['velax', 'velay'] else "vel"
-        self.tip_config = self._tips_config.get(tip_name, self._tips_config["default"])
+        self.tip_config = self._tips_config.get(self.tip_name, self._tips_config["default"])
 
     # generate a numeric UID for the sample as a unique identifier using a hash of the file. 
     # This will help us track if the file has been modified.
@@ -222,7 +225,7 @@ class ASDParser:
         base = f"{self.sample_info['sample_name']}_{self.sample_info.get('side', '')}_{self.sample_info.get('state', '')}"
         return hashlib.sha256(base.encode()).hexdigest()
 
-    def parse(self):
+    def parse(self, add_mising_fields=False):
         """parse 
 
         General method to parse an ASD file.
@@ -259,12 +262,10 @@ class ASDParser:
         current_category = None
         current_tip = self.tip_name
         
-
+        measure_line_data_pattern = r"/data/(.+)"
         # Iterate through the lines to parse the measurements.
         i = 12  # start reading from line 13 (0-indexed)
         while i < len(lines):
-            # print the current i overwriting the previous print statement
-            # print(f'\r{i}', end='')
             line = lines[i].strip()
             if not line:
                 i += 1
@@ -273,7 +274,6 @@ class ASDParser:
             # Check for tile definition block.
             if re.match(self._block_config['tile']['pattern'], line):
                 # Process 5-line tile definition block.
-                print(f'{i} {line}\n', end='')
                 current_tile = self._parse_tile_definition(lines[i:i+5])
                 current_category = None # reset category with new tile definition
                 i += self._block_config['tile']['lines']
@@ -281,19 +281,26 @@ class ASDParser:
             # Check for category definition block.
             elif re.match(self._block_config['category']['pattern'], line):
                 parts = line.split('category ', 1)
-                print(f'{i} {line}')
                 current_category = parts[1].strip() if len(parts) > 1 else None
+
                 # Update the tip configuration based on the category or tip
                 current_tip = re.search(self._block_config['tip']['pattern'], line).group(1)
+                print(f'found category {current_category} with tip {current_tip} at line {i}')
+                
+                # if the current_tip is "velax" or "velay" extract the direction, x or y and save it for later
+                if current_tip in ['velax', 'velay']:
+                    direction = current_tip[-1]
                 # update the tip configuration based on the current_tip value
                 self._update_tip_config(current_tip)
                 tip_config = self.tip_config
                 meas_block_size = tip_config["lines_per_measurement"]
+                current_tip = self.tip_name
+
                 # check if self.measurements already has the key for the tip
                 if current_tip not in self.measurements:
                     print(f"Warning: adding new {current_tip} to .measurements")
                     self.measurements[current_tip] = {}  # Initialize the measurement block for the current tip.
-                print(f'found category {current_category} with tip {current_tip} at line {i}')
+                
                 i += self._block_config['category']['lines']
             
             # Otherwise, assume measurement block.
@@ -319,12 +326,29 @@ class ASDParser:
                     # record.get('sample_uid'),
                     # record.get('sample_name'),
                     # record.get('base_uid'),
-                    record.get("tile_number"),
+                    record.get("tile_number", 1),
                     record.get("measurement_tip_name"),
                     record.get("measurement_category", ""),
                     record.get("measurement_x_coordinate"),
                     record.get("measurement_y_coordinate")
                 )
+
+                # if category is "vel" then we need to extract the angle and wave type from the line
+                # For example, tile/{tile_number}/tip/{tip_name}/pt/{x}/{y}/data/angle/{angle_value}/{wave_type}/{feature} 4
+                if current_category == 'vel':
+                    record['direction'] = direction
+                    angle_match = re.search(tip_config['data_pattern'], line) #r'angle/(\d+)/(\w+)/', line)
+                    if angle_match:
+                        record['measurement_angle'] = int(angle_match.group(1))
+                        record['measurement_wave_type'] = angle_match.group(2)
+                    else:
+                        record['measurement_angle'] = 0
+                        record['measurement_wave_type'] = 'p'
+
+                    # update key
+                    key += (record.get('measurement_angle', 0), 
+                            record.get('measurement_wave_type', 'p'),
+                            record.get('direction', 'x'))
                 
                 # For aggregation, later blocks for the same point could update the record.
                 self.measurements[current_tip][key] = record
@@ -405,15 +429,13 @@ class ASDParser:
         Returns:
             int: tile number
         """
-
         
         first_line = tile_lines[0].strip()
         origin_line = tile_lines[1].strip()
         corner_lines = tile_lines[3].strip()
 
         # Extract the origin and corner values from the respective lines.
-        # Example tile/2/origin/value 0.0 300.0
-        
+        # Example tile/2/origin/value 0.0 300.0        
         m_origin = re.match(self._block_config['tile']['fields']['coords_origin_pattern'], origin_line)
         m_corner = re.match(self._block_config['tile']['fields']['coords_corner_pattern'], corner_lines)
         x_origin, y_origin = None, None
@@ -428,7 +450,9 @@ class ASDParser:
         # Extract tile number and grid type from the first line.
         tile_number = 1
         tile_grid_type = None
-        m = re.match(r"tile/(\d+)/type\s+(.+)", first_line)
+        
+        # m = re.match(r"tile/(\d+)/type\s+(.+)", first_line)
+        m = re.match(self._block_config['tile']['fields']['info_pattern'], first_line)
         if m:
             tile_number = int(m.group(1))
             tile_grid_type = m.group(2)
@@ -440,7 +464,7 @@ class ASDParser:
             }
         return tile_number
 
-    def _parse_measurement_block(self, block:list, tip_config:dict) -> dict:
+    def _parse_measurement_block(self, block:list, tip_config:dict, add_missing_fields:bool = False) -> dict:
         """_parse_measurement_block
 
         Process a block of measurement lines (the number of lines is specified in tip_config).
@@ -461,25 +485,32 @@ class ASDParser:
         m = re.match(self._block_config['measurement']['coords_pattern'], first_line)
         #m = re.match(r"tile/(\d+)/tip/([^/]+)/pt/([\d\.]+)/([\d\.]+)/data/", first_line)
         if m:
-        #     record["tile_number"] = int(m.group(1))
-        #     record["measurement_tip_name"] = m.group(2)
             record["measurement_x_coordinate"] = float(m.group(3))
             record["measurement_y_coordinate"] = float(m.group(4))
         # Process each line in the block.
-        for line in block:
+        # Add a col_uid to store fields that are not in tip_config  
+        col_uid = 0
+
+        # Get the field pattern from tip_config or use the default
+        field_pattern = tip_config.get('field_pattern', r"/data/(.+)")
+
+        for line in block:    
             parts = line.split()
+
             # Extract the field part from the identifier.
-            m_field = re.search(r"/data/(.+)", parts[0])
+            m_field = re.search(field_pattern, parts[0])
             if not m_field:
                 continue
             field = m_field.group(1)
+
             # verify that the field is in the keys of self.tip_config['fields'] dictionary
             if field not in tip_config["fields"]:
-                col_name = 'data'
+                col_name = str(field)#'data' + str(col_uid)
                 conv_func = str
+                col_uid += 1
             else:
                 col_name, conv_func = tip_config["fields"][field]
-            
+
             try:
                 vals = parts[1:]
                 value = conv_func(vals[0]) if len(vals) == 1 else conv_func(vals)
