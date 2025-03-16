@@ -71,11 +71,11 @@ TIP_CONFIG = {
             "force/sampleinterval": ("force_sampleinterval", float),
             "force/scoperange": ("force_scoperange", float),
             "force/starttime": ("force_starttime", str),
-            "force/value": ("force_value", lambda vals: list(map(float, vals))),
+            "force/value": ("force_value", lambda vals: list(map(convert_to_float, vals))),
             "accel/sampleinterval": ("accel_sampleinterval", float),
             "accel/scoperange": ("accel_scoperange", float),
             "accel/starttime": ("accel_starttime", str),
-            "accel/value": ("accel_value", lambda vals: list(map(float, vals))),
+            "accel/value": ("accel_value", lambda vals: list(map(convert_to_float, vals))),
             "tipattributes/value": ("tipattributes", lambda vals: {vals[i].lower(): float(vals[i+1]) for i in range(0, len(vals), 2)}),
             "height/value": ("height_value", float)
         }
@@ -105,7 +105,8 @@ TIP_CONFIG = {
             "starttime": ("starttime", str),
             "tipforceaux": ("tipforceaux", convert_to_float),
             "tipforcemain": ("tipforcemain", convert_to_float),
-            "value": ("value", lambda vals: [convert_to_float(vals[i]) for i in range(len(vals))]),
+            "value": ("value", lambda vals: list(map(convert_to_float, vals))), 
+            #[convert_to_float(vals[i]) for i in range(len(vals))]),
             "average": ("average", convert_to_float)
         }
     },
@@ -330,7 +331,8 @@ class ASDParser:
                     record.get("measurement_tip_name"),
                     record.get("measurement_category", ""),
                     record.get("measurement_x_coordinate"),
-                    record.get("measurement_y_coordinate")
+                    record.get("measurement_y_coordinate"),
+                    record.get("data_type", "raw")
                 )
 
                 # if category is "vel" then we need to extract the angle and wave type from the line
@@ -487,6 +489,12 @@ class ASDParser:
         if m:
             record["measurement_x_coordinate"] = float(m.group(3))
             record["measurement_y_coordinate"] = float(m.group(4))
+
+        # check if the line includes a processing label
+        record["data_type"] = 'raw'
+        if 'proc' in first_line:
+            record['data_type'] = 'processed'
+
         # Process each line in the block.
         # Add a col_uid to store fields that are not in tip_config  
         col_uid = 0
